@@ -1,0 +1,76 @@
+#!/bin/bash
+
+if [ $(uname -s | tr [':upper:'] [':lower:']) == "linux" ]; then
+  # do we need to use sudo to start docker containers?
+  ( id -Gn | grep -q docker ) || _SUDO=sudo
+fi
+
+
+_USER='$(getent passwd $(stat -c "%u" "$(pwd)") | cut -d: -f1)'
+
+_TAG=${1:-'alpine:3.3'}
+shift
+_ASH=${1:-sh}
+shift
+_ARG="$@"
+
+
+if [ $_TAG == 'dosh' ]; then
+  if $_SUDO docker images -aq $_TAG >/dev/null; then
+    $_SUDO docker build -t $_TAG - <<EOF >/dev/null
+FROM alpine:3.3
+MAINTAINER luuvish <luuvish@gmail.com>
+
+RUN echo $'#!/bin/sh\n\\
+\n\\
+_USER=\${_USER:-docker}\n\\
+_UID=\$(stat -c "%u" "\$(pwd)")\n\\
+_GID=\$(stat -c "%g" "\$(pwd)")\n\\
+_ASH=\$(adduser 2>&1 | grep BusyBox)\n\\
+_ARG="\$@"\n\\
+\n\\
+if ! getent group \$_USER >/dev/null; then\n\\
+  _OPTIONS="\$([ -n \$_ASH ] && echo -g || echo --gid) \$_GID"\n\\
+  addgroup \$_OPTIONS \$_USER >/dev/null\n\\
+fi\n\\
+if ! getent passwd \$_USER >/dev/null; then\n\\
+  [ -n \$_ASH ] \\\\\n\\
+    && _OPTIONS="-s /bin/ash -H -D -u \$_UID -G \$_USER" \\\\\n\\
+    || _OPTIONS="--shell /bin/bash --no-create-home --disabled-password \\\\\n\\
+                 --uid \$_UID --gid \$_GID"\n\\
+  adduser \$_OPTIONS \$_USER >/dev/null\n\\
+fi\n\\
+\n\\
+! which sudo >/dev/null && exec su \$_USER -c "\$_ARG"\n\\
+which sudo >/dev/null && exec sudo -H -u \$_USER \$_ARG\n'\\
+>> /sbin/dosh
+RUN chmod +x /sbin/dosh
+ENTRYPOINT ["/sbin/dosh"]
+EOF
+  fi
+
+  $_SUDO docker run -it --rm \
+    -v $(pwd):$(pwd) --workdir $(pwd) \
+    -v /etc/localtime:/etc/localtime:ro \
+    -v /etc/timezone:/etc/timezone:ro \
+    -v /etc/group:/etc/group:ro \
+    -v /etc/passwd:/etc/passwd:ro \
+    -v /etc/shadow:/etc/shadow:ro \
+    $_TAG $_ASH $_ARG
+  exit
+fi
+
+
+_CMD="sudo -H -u $_USER $_ASH $_ARG"
+if ! $_SUDO docker run -it --rm $_TAG which sudo >/dev/null; then
+  _CMD="su $_USER -c \'$_ASH $_ARG\'"
+fi
+
+$_SUDO docker run -it --rm \
+  -v $(pwd):$(pwd) --workdir $(pwd) \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /etc/timezone:/etc/timezone:ro \
+  -v /etc/group:/etc/group:ro \
+  -v /etc/passwd:/etc/passwd:ro \
+  -v /etc/shadow:/etc/shadow:ro \
+  $_TAG sh -c "eval exec $_CMD"
